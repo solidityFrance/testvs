@@ -1,8 +1,10 @@
 // Copyright (c) Consensys Software Inc. All rights reserved.
 // Licensed under the MIT license.
 
-import truffleDebugger from '@truffle/debugger';
+import {DebuggerOptions, forTx, selectors, Selectors, Session} from '@truffle/debugger';
+import {fetchAndCompileForDebugger} from '@truffle/fetch-and-compile';
 import {EventEmitter} from 'events';
+// import { writeFileSync } from 'fs-extra';
 import {filterContractsWithAddress, prepareContracts} from './contracts/contractsPrepareHelpers';
 import {TranslatedResult, translateTruffleVariables} from './helpers';
 import {DebuggerTypes} from './models/debuggerTypes';
@@ -10,10 +12,12 @@ import {ICallInfo} from './models/ICallInfo';
 import {IContractModel} from './models/IContractModel';
 import {IInstruction} from './models/IInstruction';
 
+// import * as os from 'os';
+
 export default class RuntimeInterface extends EventEmitter {
   private _isDebuggerAttached: boolean;
-  private _session: truffleDebugger.Session | undefined;
-  private _selectors: truffleDebugger.Selectors;
+  private _session: Session | undefined;
+  private _selectors: Selectors;
   private _numBreakpoints: number;
   private _deployedContracts: IContractModel[];
   private _initialBreakPoints: Array<{path: string; lines: number[]}>;
@@ -22,7 +26,7 @@ export default class RuntimeInterface extends EventEmitter {
   constructor() {
     super();
 
-    this._selectors = truffleDebugger.selectors;
+    this._selectors = selectors;
     this._numBreakpoints = 0;
     this._isDebuggerAttached = false;
     this._initialBreakPoints = [];
@@ -154,25 +158,36 @@ export default class RuntimeInterface extends EventEmitter {
 
     this._deployedContracts = filterContractsWithAddress(result.contracts);
 
-    const options: truffleDebugger.DebuggerOptions = {
+    const options: DebuggerOptions = {
       contracts: result.contracts,
       files: result.files,
       provider: result.provider,
+      lightMode: true,
     };
     this._fileLookupMap = result.lookupMap;
-    this._session = await this.generateSession(txHash, options);
+    this._session = await this.generateSession(txHash, options, false);
     this._isDebuggerAttached = true;
   }
 
   public currentLine(): DebuggerTypes.IFrame {
     this.validateSession();
     const currentLocation = this._session!.view(this._selectors.controller.current.location);
-    const sourcePath = this._session!.view(this._selectors.sourcemapping.current.source).sourcePath;
+    const source = this._session!.view(this._selectors.sourcemapping.current.source);
+    const sourcePath = source.sourcePath;
     if (!sourcePath) {
       throw new Error('No source file');
     }
     // so if we have a file in a location that doesn't map 1:1 to the actual file name in the compiler we map it here...
-    const file = this._fileLookupMap.has(sourcePath) ? this._fileLookupMap.get(sourcePath) : sourcePath;
+    let file: string;
+    if (this._fileLookupMap.has(sourcePath)) {
+      file = this._fileLookupMap.get(sourcePath)!;
+    } else {
+      // const tmp = os.tmpdir();
+      // const path = tmp + '/' + sourcePath;
+      // writeFileSync(path, source.source);
+      // file = path;
+      file = sourcePath;
+    }
 
     return {
       column: currentLocation.sourceRange ? currentLocation.sourceRange.lines.start.column : 0,
@@ -210,8 +225,13 @@ export default class RuntimeInterface extends EventEmitter {
     }
   }
 
-  private async generateSession(txHash: string, options: truffleDebugger.DebuggerOptions) {
-    const bugger = await truffleDebugger.forTx(txHash, options);
+  private async generateSession(txHash: string, options: DebuggerOptions, fetchExternal: boolean) {
+    const bugger = await forTx(txHash, options);
+
+    if (fetchExternal) {
+      await fetchAndCompileForDebugger(bugger, {network: {networkId: 5}}); //Note: mutates bugger!!
+    }
+
     return bugger.connect();
   }
 
